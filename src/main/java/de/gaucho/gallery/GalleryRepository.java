@@ -63,8 +63,33 @@ public class GalleryRepository {
 		}
 	}
 
-	public record Snapshot(Map<String, List<Option>> options, List<KillSound> killSounds) {
-		public static final Snapshot EMPTY = new Snapshot(Map.of(), List.of());
+	/** Hintergrundbild fuers Menue (gallery/backgrounds/*.png). */
+	public static final class Background {
+		public final String name;
+		public final String sha;
+		public final int index;
+		public final int width;
+		public final int height;
+
+		Background(String name, String sha, int index, int width, int height) {
+			this.name = name;
+			this.sha = sha;
+			this.index = index;
+			this.width = width;
+			this.height = height;
+		}
+	}
+
+	public record Snapshot(Map<String, List<Option>> options, List<KillSound> killSounds, List<Background> backgrounds) {
+		public static final Snapshot EMPTY = new Snapshot(Map.of(), List.of(), List.of());
+
+		public Background findBackground(String name) {
+			if (name == null) return null;
+			for (Background b : backgrounds) {
+				if (b.name.equals(name)) return b;
+			}
+			return null;
+		}
 
 		public List<Option> optionsFor(String categoryId) {
 			return options.getOrDefault(categoryId, List.of());
@@ -88,6 +113,7 @@ public class GalleryRepository {
 	}
 
 	private static final String KILL_SOUND_FOLDER = "killsounds";
+	private static final String BACKGROUND_FOLDER = "backgrounds";
 
 	private final Path cacheDir = FabricLoader.getInstance().getConfigDir().resolve("gauchos_gallery_cache");
 	private final HttpClient http = HttpClient.newBuilder()
@@ -184,6 +210,7 @@ public class GalleryRepository {
 		// 2) Dateiliste auswerten
 		Map<String, TreeMap<String, Option>> byCategory = new LinkedHashMap<>();
 		List<String[]> sounds = new ArrayList<>(); // name, sha
+		List<String[]> backgrounds = new ArrayList<>(); // name, sha
 		Map<String, String> shaToPath = new LinkedHashMap<>();
 
 		JsonArray tree = JsonParser.parseString(treeJson).getAsJsonObject().getAsJsonArray("tree");
@@ -199,6 +226,14 @@ public class GalleryRepository {
 			if (folder.equals(KILL_SOUND_FOLDER)) {
 				if (parts.length == 2 && parts[1].toLowerCase().endsWith(".ogg")) {
 					sounds.add(new String[]{stripExt(parts[1], ".ogg"), sha});
+					shaToPath.put(sha, path);
+				}
+				continue;
+			}
+
+			if (folder.equals(BACKGROUND_FOLDER)) {
+				if (parts.length == 2 && parts[1].toLowerCase().endsWith(".png")) {
+					backgrounds.add(new String[]{stripExt(parts[1], ".png"), sha});
 					shaToPath.put(sha, path);
 				}
 				continue;
@@ -288,8 +323,20 @@ public class GalleryRepository {
 			soundList.add(new KillSound(sounds.get(i)[0], sounds.get(i)[1], i));
 		}
 
-		status = (offline ? "Offline – " : "") + optionCount + " Texturen, " + soundList.size() + " Kill-Sounds geladen";
-		return new Snapshot(result, List.copyOf(soundList));
+		backgrounds.sort(Comparator.comparing(b -> b[0].toLowerCase()));
+		List<Background> bgList = new ArrayList<>();
+		for (String[] b : backgrounds) {
+			int[] size = pngSize(cacheFile(b[1]));
+			if (size == null) {
+				GauchosGallery.LOGGER.warn("Hintergrund {} ist keine gueltige PNG", b[0]);
+				continue;
+			}
+			bgList.add(new Background(b[0], b[1], bgList.size(), size[0], size[1]));
+		}
+
+		status = (offline ? "Offline – " : "") + optionCount + " Texturen · " + soundList.size() + " Sounds · "
+				+ bgList.size() + " Hintergründe";
+		return new Snapshot(result, List.copyOf(soundList), List.copyOf(bgList));
 	}
 
 	private void download(String path, String sha) throws IOException, InterruptedException {
@@ -306,6 +353,19 @@ public class GalleryRepository {
 			throw new IOException("HTTP " + res.statusCode());
 		}
 		Files.move(tmp, cacheFile(sha), StandardCopyOption.REPLACE_EXISTING);
+	}
+
+	/** Liest Breite/Hoehe aus dem PNG-Header (ohne das Bild zu laden). */
+	private static int[] pngSize(Path file) {
+		try (InputStream in = Files.newInputStream(file)) {
+			byte[] h = in.readNBytes(24);
+			if (h.length < 24 || (h[0] & 0xFF) != 0x89 || h[1] != 'P' || h[2] != 'N' || h[3] != 'G') return null;
+			int w = ((h[16] & 0xFF) << 24) | ((h[17] & 0xFF) << 16) | ((h[18] & 0xFF) << 8) | (h[19] & 0xFF);
+			int ht = ((h[20] & 0xFF) << 24) | ((h[21] & 0xFF) << 16) | ((h[22] & 0xFF) << 8) | (h[23] & 0xFF);
+			return (w > 0 && ht > 0) ? new int[]{w, ht} : null;
+		} catch (IOException e) {
+			return null;
+		}
 	}
 
 	private static HttpRequest.Builder request(String url) {

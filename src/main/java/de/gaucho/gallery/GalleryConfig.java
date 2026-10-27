@@ -25,6 +25,16 @@ public class GalleryConfig {
 	/** 0.0 - 1.0 */
 	public float killSoundVolume = 1.0f;
 
+	// ---- Aussehen des Menues (jeder Spieler fuer sich) ----
+	/** "dark" oder "light" */
+	public String theme = "dark";
+	/** Name der Akzentfarbe, siehe Theme.ACCENTS */
+	public String accent = "Gold";
+	/** null = automatisch (erstes Bild aus der Galerie), "-" = kein Bild, sonst Name des Bildes */
+	public String background = null;
+	/** Wie stark das Hintergrundbild abgedunkelt/aufgehellt wird, 0-80 % */
+	public int backgroundDim = 40;
+
 	public static GalleryConfig load() {
 		if (Files.exists(FILE)) {
 			try (Reader r = Files.newBufferedReader(FILE, StandardCharsets.UTF_8)) {

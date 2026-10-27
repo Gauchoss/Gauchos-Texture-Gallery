@@ -1,65 +1,54 @@
 package de.gaucho.gallery;
 
-import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
-/** Das Ingame-Menue (Standardtaste: G). */
+/** Das Ingame-Menue (Standardtaste: G). Komplett eigenes, flaches Design mit Themes. */
 public class GalleryScreen extends Screen {
-	private static final String KILL_SOUND = "__kill_sound";
-	private static final int LEFT_X = 8;
-	private static final int LEFT_W = 160;
-	private static final int ROW_H = 22;
-	private static final int TOP = 36;
-	private static final int BOTTOM_BAR = 32;
-	private static final int TILE_W = 76;
-	private static final int TILE_H = 68;
-	private static final int PREVIEW = 40;
+	private static final String PAGE_SOUND = "__kill_sound";
+	private static final String PAGE_SETTINGS = "__settings";
+
+	private static final int HEADER = 30;
+	private static final int SIDEBAR = 150;
+	private static final int ROW = 16;
+	private static final int TILE = 40;
+	private static final int GAP = 6;
+	private static final int PAD = 12;
 	private static final float[] VOLUMES = {0.25f, 0.5f, 0.75f, 1.0f};
+	private static final int[] DIMS = {0, 20, 40, 60, 80};
 
-	private static final int WHITE = 0xFFFFFFFF;
-	private static final int GRAY = 0xFFAAAAAA;
-	private static final int GOLD = 0xFFFFC94A;
-	private static final int GREEN = 0xFF55FF55;
-
-	// Merkt sich die zuletzt offene Kategorie zwischen zwei Oeffnungen
-	private static String lastCategory = KILL_SOUND;
+	private static String lastPage = PAGE_SOUND;
 
 	private final Screen parent;
 	private final Map<String, String> pending;
 	private String pendingSound;
 	private float pendingVolume;
-	private String selected = lastCategory;
+	private String page = lastPage;
 	private int leftScroll = 0;
 	private int rightScroll = 0;
 	private int seenVersion = -1;
 	private int tickCounter = 0;
 
-	private int rightX;
-	private int rightW;
-	private final List<Header> headers = new ArrayList<>();
-	private final List<Tile> tiles = new ArrayList<>();
-	private final Set<Integer> loadedPreviews = new HashSet<>();
-	private String rightTitle = "";
-	private String rightHint = null;
+	// Layout (wird in init() berechnet)
+	private Theme t;
+	private int px, py, pw, ph;
+	private int cx, cy, cw, ch;
+	private final List<Label> labels = new ArrayList<>();
+	/** Welche Bilder (Vorschauen/Hintergruende) schon im geladenen Resource Pack sind. */
+	private final Map<Identifier, Boolean> loaded = new HashMap<>();
 
-	private record Header(String text, int y) {}
-
-	private record Tile(int x, int y, GalleryRepository.Option option, boolean selected) {}
+	/** Text, der in render() gezeichnet wird (Ueberschriften, Hinweise). */
+	private record Label(String text, int x, int y, int color) {}
 
 	public GalleryScreen(Screen parent) {
 		super(Component.literal("Gauchos Texture Gallery"));
@@ -70,99 +59,116 @@ public class GalleryScreen extends Screen {
 		this.pendingVolume = cfg.killSoundVolume;
 	}
 
-	// ------------------------------------------------------------ Aufbau
+	// =============================================================== Aufbau
 
 	@Override
 	protected void init() {
 		seenVersion = GauchosGallery.dataVersion();
-		headers.clear();
-		tiles.clear();
-		rightHint = null;
-		rightX = LEFT_X + LEFT_W + 12;
-		rightW = Math.max(TILE_W, this.width - rightX - 8);
+		t = Theme.current();
+		labels.clear();
 
-		buildLeftList();
-		if (KILL_SOUND.equals(selected)) {
-			buildSoundPanel();
+		pw = Math.min(this.width - 20, 640);
+		ph = Math.min(this.height - 20, 380);
+		px = (this.width - pw) / 2;
+		py = (this.height - ph) / 2;
+		cx = px + SIDEBAR + PAD;
+		cy = py + HEADER + 10;
+		cw = px + pw - PAD - cx;
+		ch = py + ph - 10 - cy;
+
+		buildHeader();
+		buildSidebar();
+		if (PAGE_SETTINGS.equals(page)) {
+			buildSettings();
+		} else if (PAGE_SOUND.equals(page) || Categories.byId(page) == null) {
+			page = PAGE_SOUND;
+			buildSounds();
 		} else {
-			Categories.Category cat = Categories.byId(selected);
-			if (cat == null) {
-				selected = KILL_SOUND;
-				buildSoundPanel();
-			} else {
-				buildTilePanel(cat);
-			}
+			buildTiles(Categories.byId(page));
 		}
-		refreshPreviewState();
-
-		int by = this.height - 26;
-		int bw = 120;
-		int bx = this.width / 2 - (bw * 3 + 8) / 2;
-		Button reload = this.addRenderableWidget(Button.builder(Component.literal("Galerie neu laden"), b -> {
-			GauchosGallery.reloadGallery();
-		}).bounds(bx, by, bw, 20).tooltip(Tooltip.create(Component.literal("Holt neue Texturen & Sounds von GitHub"))).build());
-		reload.active = !GauchosGallery.repository().isLoading();
-		Button applyBtn = this.addRenderableWidget(Button.builder(Component.literal("Übernehmen"), b -> apply())
-				.bounds(bx + bw + 4, by, bw, 20).build());
-		applyBtn.active = isDirty();
-		this.addRenderableWidget(Button.builder(Component.literal("Fertig"), b -> this.onClose()).bounds(bx + (bw + 4) * 2, by, bw, 20).build());
 	}
 
-	private List<Object> leftRows() {
+	private void buildHeader() {
+		int size = 18;
+		int y = py + (HEADER - size) / 2;
+		int x = px + pw - 8 - size;
+
+		add(new UiButton(x, y, size, size, "Schließen", (g, b, hov) -> iconButton(g, b, hov, "✕", false), this::onClose))
+				.tooltip("Schließen (speichert automatisch)");
+		x -= size + 4;
+		add(new UiButton(x, y, size, size, "Einstellungen",
+				(g, b, hov) -> iconButton(g, b, hov, "⚙", PAGE_SETTINGS.equals(page)), () -> select(PAGE_SETTINGS)))
+				.tooltip("Aussehen");
+		x -= size + 4;
+		UiButton reload = add(new UiButton(x, y, size, size, "Neu laden",
+				(g, b, hov) -> iconButton(g, b, hov, "↻", false), GauchosGallery::reloadGallery))
+				.tooltip("Galerie neu von GitHub laden");
+		reload.active = !GauchosGallery.repository().isLoading();
+
+		if (isDirty()) {
+			String txt = "Übernehmen";
+			int w = this.font.width(txt) + 16;
+			x -= w + 8;
+			add(new UiButton(x, y, w, size, txt, (g, b, hov) -> {
+				g.fill(b.getX(), b.getY(), b.getX() + b.getWidth(), b.getY() + b.getHeight(),
+						hov ? Theme.alpha(t.accent(), 0xDD) : t.accent());
+				centered(g, txt, b.getX() + b.getWidth() / 2, b.getY() + 5, t.onAccent());
+			}, this::apply)).tooltip("Texturen jetzt anwenden");
+		}
+	}
+
+	private List<Object> sidebarRows() {
 		List<Object> rows = new ArrayList<>();
-		rows.add(KILL_SOUND);
-		for (Categories.Group g : Categories.GROUPS) {
-			rows.add(g);
+		rows.add(PAGE_SOUND);
+		for (Categories.Group grp : Categories.GROUPS) {
+			rows.add(grp);
 			for (Categories.Category c : Categories.all()) {
-				if (c.group() == g) rows.add(c);
+				if (c.group() == grp) rows.add(c);
 			}
 		}
 		return rows;
 	}
 
-	private void buildLeftList() {
-		List<Object> rows = leftRows();
-		int visible = Math.max(1, (this.height - TOP - BOTTOM_BAR) / ROW_H);
+	private void buildSidebar() {
+		List<Object> rows = sidebarRows();
+		int top = py + HEADER + 4;
+		int visible = Math.max(1, (py + ph - 4 - top) / ROW);
 		leftScroll = clamp(leftScroll, 0, Math.max(0, rows.size() - visible));
 		GalleryRepository.Snapshot snap = GauchosGallery.repository().snapshot();
+		int x = px + 6;
+		int w = SIDEBAR - 12;
 
 		for (int i = 0; i < visible; i++) {
 			int idx = leftScroll + i;
 			if (idx >= rows.size()) break;
-			int y = TOP + i * ROW_H;
+			int y = top + i * ROW;
 			Object row = rows.get(idx);
-			if (row instanceof Categories.Group g) {
-				headers.add(new Header(g.label(), y + 7));
+			if (row instanceof Categories.Group grp) {
+				labels.add(new Label(grp.label().toUpperCase(), x + 4, y + 6, t.textMuted()));
 			} else if (row instanceof Categories.Category c) {
 				int count = snap.optionsFor(c.id()).size();
-				MutableComponent label = Component.literal((c.id().equals(selected) ? "» " : "") + c.label());
-				if (pending.containsKey(c.id())) {
-					label.append(Component.literal(" ✔").withStyle(ChatFormatting.GREEN));
-				} else if (count > 0) {
-					label.append(Component.literal(" (" + count + ")").withStyle(ChatFormatting.GRAY));
-				}
-				this.addRenderableWidget(Button.builder(label, b -> select(c.id())).bounds(LEFT_X, y, LEFT_W, 20).build());
+				add(new UiButton(x, y, w, ROW, c.label(), (g, b, hov) ->
+						sidebarItem(g, b, hov, c.label(), c.id().equals(page), pending.containsKey(c.id()), count), () -> select(c.id())));
 			} else {
-				MutableComponent label = Component.literal((KILL_SOUND.equals(selected) ? "» " : "") + "♪ Kill-Sound");
-				if (pendingSound != null) label.append(Component.literal(" ✔").withStyle(ChatFormatting.GREEN));
-				this.addRenderableWidget(Button.builder(label, b -> select(KILL_SOUND)).bounds(LEFT_X, y, LEFT_W, 20).build());
+				add(new UiButton(x, y, w, ROW, "Kill-Sound", (g, b, hov) ->
+						sidebarItem(g, b, hov, "♪  Kill-Sound", PAGE_SOUND.equals(page), pendingSound != null, -1), () -> select(PAGE_SOUND)));
 			}
 		}
 	}
 
-	private void buildTilePanel(Categories.Category cat) {
-		rightTitle = cat.label();
+	private void buildTiles(Categories.Category cat) {
 		List<GalleryRepository.Option> opts = GauchosGallery.repository().snapshot().optionsFor(cat.id());
-		List<GalleryRepository.Option> entries = new ArrayList<>();
-		entries.add(null); // "Standard" = Vanilla
-		entries.addAll(opts);
-		if (opts.isEmpty()) {
-			rightHint = "Noch nichts hochgeladen. Ordner im Repo: gallery/" + cat.id() + "/";
-		}
+		labels.add(new Label(cat.label(), cx, cy, t.text()));
+		labels.add(new Label(opts.size() + (opts.size() == 1 ? " Variante" : " Varianten"),
+				cx + this.font.width(cat.label()) + 8, cy, t.textMuted()));
 
-		int cols = Math.max(1, rightW / TILE_W);
-		int top = TOP + 14;
-		int visibleRows = Math.max(1, (this.height - top - BOTTOM_BAR) / TILE_H);
+		List<GalleryRepository.Option> entries = new ArrayList<>();
+		entries.add(null); // Standard
+		entries.addAll(opts);
+
+		int top = cy + 18;
+		int cols = Math.max(1, (cw + GAP) / (TILE + GAP));
+		int visibleRows = Math.max(1, (cy + ch - top + GAP) / (TILE + GAP));
 		int totalRows = (entries.size() + cols - 1) / cols;
 		rightScroll = clamp(rightScroll, 0, Math.max(0, totalRows - visibleRows));
 
@@ -170,84 +176,208 @@ public class GalleryScreen extends Screen {
 		for (int i = 0; i < visibleRows * cols; i++) {
 			int idx = rightScroll * cols + i;
 			if (idx >= entries.size()) break;
-			int tx = rightX + (i % cols) * TILE_W;
-			int ty = top + (i / cols) * TILE_H;
 			GalleryRepository.Option o = entries.get(idx);
 			String name = o == null ? null : o.name;
-			boolean isSel = Objects.equals(current, name);
-			tiles.add(new Tile(tx, ty, o, isSel));
-
-			Button b = Button.builder(Component.literal(o == null ? "Standard" : o.name), btn -> {
+			boolean sel = Objects.equals(current, name);
+			int x = cx + (i % cols) * (TILE + GAP);
+			int y = top + (i / cols) * (TILE + GAP);
+			Identifier img = (o != null && o.previewIndex >= 0) ? previewId(o.previewIndex) : null;
+			add(new UiButton(x, y, TILE, TILE, o == null ? "Standard" : o.name, (g, b, hov) -> {
+				box(g, b, hov ? t.surfaceHover() : t.surface());
+				if (o == null) {
+					centered(g, "↺", b.getX() + TILE / 2, b.getY() + TILE / 2 - 4, t.textMuted());
+				} else if (img != null && isLoaded(img)) {
+					g.blit(RenderPipelines.GUI_TEXTURED, img, b.getX() + 4, b.getY() + 4, 0f, 0f, TILE - 8, TILE - 8, TILE - 8, TILE - 8);
+				} else {
+					centered(g, "…", b.getX() + TILE / 2, b.getY() + TILE / 2 - 4, t.textMuted());
+				}
+				if (sel) outline(g, b.getX(), b.getY(), TILE, TILE, 2, t.accent());
+			}, () -> {
 				if (name == null) pending.remove(cat.id());
 				else pending.put(cat.id(), name);
 				this.rebuildWidgets();
-			}).bounds(tx, ty + PREVIEW + 6, TILE_W - 4, 20)
-					.tooltip(Tooltip.create(Component.literal(o == null ? "Originale Minecraft-Textur" : o.name)))
-					.build();
-			this.addRenderableWidget(b);
+			})).tooltip(o == null ? "Standard (Original-Textur)" : o.name);
+		}
+
+		if (opts.isEmpty()) {
+			int y = top + TILE + 12;
+			labels.add(new Label("Noch keine Texturen hochgeladen.", cx, y, t.textMuted()));
+			labels.add(new Label("Ordner im Repo: gallery/" + cat.id() + "/", cx, y + 12, t.textMuted()));
 		}
 	}
 
-	private void buildSoundPanel() {
-		rightTitle = "Kill-Sound";
+	private void buildSounds() {
 		List<GalleryRepository.KillSound> sounds = GauchosGallery.repository().snapshot().killSounds();
+		labels.add(new Label("Kill-Sound", cx, cy, t.text()));
 
-		int y0 = TOP + 14;
-		this.addRenderableWidget(Button.builder(Component.literal("Lautstärke: " + Math.round(pendingVolume * 100) + "%"), b -> {
-			int next = 0;
-			for (int i = 0; i < VOLUMES.length; i++) {
-				if (Math.abs(VOLUMES[i] - pendingVolume) < 0.01f) next = (i + 1) % VOLUMES.length;
-			}
-			pendingVolume = VOLUMES[next];
-			this.rebuildWidgets();
-		}).bounds(rightX, y0, 120, 20).build());
-		this.addRenderableWidget(Button.builder(Component.literal("▶ Testen"), b -> {
-			GalleryRepository.KillSound s = GauchosGallery.repository().snapshot().findSound(pendingSound);
-			if (s != null) KillTracker.playSound(s, pendingVolume);
-		}).bounds(rightX + 124, y0, 80, 20).build());
-
-		if (sounds.isEmpty()) {
-			rightHint = "Noch keine Sounds. Lade .ogg-Dateien nach gallery/killsounds/ hoch.";
+		int y = cy + 18;
+		labels.add(new Label("Lautstärke", cx, y + 4, t.textMuted()));
+		int x = cx + 64;
+		for (float v : VOLUMES) {
+			String txt = Math.round(v * 100) + "%";
+			boolean sel = Math.abs(v - pendingVolume) < 0.01f;
+			int w = 36;
+			add(new UiButton(x, y, w, 16, txt, (g, b, hov) -> pill(g, b, hov, txt, sel), () -> {
+				pendingVolume = v;
+				this.rebuildWidgets();
+			}));
+			x += w + 4;
 		}
 
 		List<GalleryRepository.KillSound> entries = new ArrayList<>();
 		entries.add(null);
 		entries.addAll(sounds);
-		int listTop = y0 + 28;
-		int visible = Math.max(1, (this.height - listTop - BOTTOM_BAR) / 24);
+		int top = y + 26;
+		int rowH = 18;
+		int visible = Math.max(1, (cy + ch - top) / (rowH + 3));
 		rightScroll = clamp(rightScroll, 0, Math.max(0, entries.size() - visible));
-		int rowW = Math.min(rightW, 260);
+		int rowW = Math.min(cw, 300);
 
 		for (int i = 0; i < visible; i++) {
 			int idx = rightScroll + i;
 			if (idx >= entries.size()) break;
 			GalleryRepository.KillSound s = entries.get(idx);
 			String name = s == null ? null : s.name;
-			boolean isSel = Objects.equals(pendingSound, name);
-			int y = listTop + i * 24;
-			MutableComponent label = Component.literal((isSel ? "» " : "") + (s == null ? "Kein Sound" : s.name));
-			if (isSel) label.withStyle(ChatFormatting.GREEN);
-			this.addRenderableWidget(Button.builder(label, b -> {
+			String label = s == null ? "Kein Sound" : s.name;
+			boolean sel = Objects.equals(pendingSound, name);
+			int ry = top + i * (rowH + 3);
+			int w = s == null ? rowW : rowW - rowH - 3;
+			add(new UiButton(cx, ry, w, rowH, label, (g, b, hov) -> {
+				box(g, b, sel ? Theme.alpha(t.accent(), 0x40) : (hov ? t.surfaceHover() : t.surface()));
+				if (sel) g.fill(b.getX(), b.getY(), b.getX() + 2, b.getY() + b.getHeight(), t.accent());
+				text(g, fit(label, b.getWidth() - 16), b.getX() + 8, b.getY() + 5, sel ? t.text() : t.text());
+			}, () -> {
 				pendingSound = name;
+				if (s != null) KillTracker.playSound(s, pendingVolume);
 				this.rebuildWidgets();
-			}).bounds(rightX, y, rowW - 26, 20).build());
+			}));
 			if (s != null) {
-				this.addRenderableWidget(Button.builder(Component.literal("▶"), b -> KillTracker.playSound(s, pendingVolume))
-						.bounds(rightX + rowW - 22, y, 22, 20)
-						.tooltip(Tooltip.create(Component.literal("Anhören")))
-						.build());
+				add(new UiButton(cx + rowW - rowH, ry, rowH, rowH, "Anhören", (g, b, hov) -> {
+					box(g, b, hov ? t.surfaceHover() : t.surface());
+					centered(g, "▶", b.getX() + b.getWidth() / 2 + 1, b.getY() + 5, hov ? t.accent() : t.textMuted());
+				}, () -> KillTracker.playSound(s, pendingVolume))).tooltip("Anhören");
 			}
+		}
+
+		if (sounds.isEmpty()) {
+			labels.add(new Label("Noch keine Sounds. Ordner: gallery/killsounds/ (.ogg)", cx, top + rowH + 10, t.textMuted()));
 		}
 	}
 
-	// ------------------------------------------------------------ Logik
+	private void buildSettings() {
+		GalleryConfig cfg = GauchosGallery.config();
+		labels.add(new Label("Aussehen", cx, cy, t.text()));
+		int y = cy + 20;
+		int lx = cx;
+		int vx = cx + 80;
+
+		// Design
+		labels.add(new Label("Design", lx, y + 4, t.textMuted()));
+		int x = vx;
+		for (String[] opt : new String[][]{{"dark", "Dunkel"}, {"light", "Hell"}}) {
+			boolean sel = opt[0].equals(cfg.theme) || (!"light".equals(cfg.theme) && opt[0].equals("dark"));
+			int w = this.font.width(opt[1]) + 16;
+			add(new UiButton(x, y, w, 16, opt[1], (g, b, hov) -> pill(g, b, hov, opt[1], sel), () -> {
+				cfg.theme = opt[0];
+				saveSettings();
+			}));
+			x += w + 4;
+		}
+
+		// Akzentfarbe
+		y += 26;
+		labels.add(new Label("Farbe", lx, y + 4, t.textMuted()));
+		x = vx;
+		for (Map.Entry<String, Integer> e : Theme.ACCENTS.entrySet()) {
+			String name = e.getKey();
+			int color = e.getValue();
+			boolean sel = name.equals(cfg.accent) || (!Theme.ACCENTS.containsKey(cfg.accent) && name.equals("Gold"));
+			if (x + 16 > cx + cw) break;
+			add(new UiButton(x, y, 16, 16, name, (g, b, hov) -> {
+				int bx = b.getX(), by = b.getY();
+				if (sel || hov) outline(g, bx, by, 16, 16, 1, sel ? t.text() : t.textMuted());
+				g.fill(bx + 2, by + 2, bx + 14, by + 14, color);
+			}, () -> {
+				cfg.accent = name;
+				saveSettings();
+			})).tooltip(name);
+			x += 20;
+		}
+
+		// Hintergrundbild
+		y += 26;
+		labels.add(new Label("Hintergrund", lx, y + 4, t.textMuted()));
+		List<GalleryRepository.Background> bgs = GauchosGallery.repository().snapshot().backgrounds();
+		GalleryRepository.Background active = effectiveBackground();
+		int thumbW = 64, thumbH = 36;
+		x = vx;
+		int rowY = y;
+		List<GalleryRepository.Background> entries = new ArrayList<>();
+		entries.add(null);
+		entries.addAll(bgs);
+		for (GalleryRepository.Background bg : entries) {
+			if (x + thumbW > cx + cw) {
+				x = vx;
+				rowY += thumbH + GAP;
+			}
+			boolean sel = Objects.equals(active, bg);
+			Identifier img = bg == null ? null : backgroundId(bg.index);
+			add(new UiButton(x, rowY, thumbW, thumbH, bg == null ? "Kein Bild" : bg.name, (g, b, hov) -> {
+				box(g, b, hov ? t.surfaceHover() : t.surface());
+				if (bg == null) {
+					centered(g, "Kein Bild", b.getX() + thumbW / 2, b.getY() + thumbH / 2 - 4, t.textMuted());
+				} else if (isLoaded(img)) {
+					blitCover(g, img, b.getX() + 2, b.getY() + 2, thumbW - 4, thumbH - 4, bg.width, bg.height);
+				} else {
+					centered(g, "…", b.getX() + thumbW / 2, b.getY() + thumbH / 2 - 4, t.textMuted());
+				}
+				if (sel) outline(g, b.getX(), b.getY(), thumbW, thumbH, 2, t.accent());
+			}, () -> {
+				cfg.background = bg == null ? "-" : bg.name;
+				saveSettings();
+			})).tooltip(bg == null ? "Ohne Hintergrundbild" : bg.name);
+			x += thumbW + GAP;
+		}
+		y = rowY + thumbH;
+		if (bgs.isEmpty()) {
+			labels.add(new Label("Bilder kommen aus gallery/backgrounds/", vx + thumbW + GAP, y - thumbH + 14, t.textMuted()));
+		}
+
+		// Abdunkeln
+		y += 12;
+		labels.add(new Label(t.dark() ? "Abdunkeln" : "Aufhellen", lx, y + 4, t.textMuted()));
+		x = vx;
+		for (int d : DIMS) {
+			String txt = d + "%";
+			boolean sel = cfg.backgroundDim == d;
+			int w = 36;
+			add(new UiButton(x, y, w, 16, txt, (g, b, hov) -> pill(g, b, hov, txt, sel), () -> {
+				cfg.backgroundDim = d;
+				saveSettings();
+			}));
+			x += w + 4;
+		}
+
+		labels.add(new Label("Diese Einstellungen gelten nur für dich.", cx, y + 30, t.textMuted()));
+	}
+
+	// =============================================================== Logik
+
+	private <T extends UiButton> T add(T w) {
+		return this.addRenderableWidget(w);
+	}
 
 	private void select(String id) {
-		if (!id.equals(selected)) {
-			selected = id;
-			lastCategory = id;
+		if (!id.equals(page)) {
+			page = id;
+			if (!PAGE_SETTINGS.equals(id)) lastPage = id;
 			rightScroll = 0;
 		}
+		this.rebuildWidgets();
+	}
+
+	private void saveSettings() {
+		GauchosGallery.config().save();
 		this.rebuildWidgets();
 	}
 
@@ -270,31 +400,41 @@ public class GalleryScreen extends Screen {
 		this.rebuildWidgets();
 	}
 
-	private Identifier previewId(int index) {
+	/** null = kein Bild. */
+	private GalleryRepository.Background effectiveBackground() {
+		GalleryConfig cfg = GauchosGallery.config();
+		List<GalleryRepository.Background> bgs = GauchosGallery.repository().snapshot().backgrounds();
+		if ("-".equals(cfg.background)) return null;
+		GalleryRepository.Background b = GauchosGallery.repository().snapshot().findBackground(cfg.background);
+		if (b != null) return b;
+		return bgs.isEmpty() ? null : bgs.get(0); // automatisch: erstes Bild
+	}
+
+	private static Identifier previewId(int index) {
 		return Identifier.fromNamespaceAndPath(PackBuilder.NAMESPACE, PackBuilder.previewPath(index));
 	}
 
-	/** Prueft, welche Vorschaubilder schon im geladenen Resource Pack stecken. */
-	private void refreshPreviewState() {
-		if (this.minecraft == null) return;
-		for (Tile t : tiles) {
-			if (t.option() == null || t.option().previewIndex < 0) continue;
-			int idx = t.option().previewIndex;
-			if (!loadedPreviews.contains(idx)
-					&& this.minecraft.getResourceManager().getResource(previewId(idx)).isPresent()) {
-				loadedPreviews.add(idx);
-			}
-		}
+	private static Identifier backgroundId(int index) {
+		return Identifier.fromNamespaceAndPath(PackBuilder.NAMESPACE, PackBuilder.backgroundPath(index));
+	}
+
+	/** Ist das Bild schon im geladenen Resource Pack? (Ergebnis wird gemerkt, Fehlschlaege jede Sekunde neu geprueft.) */
+	private boolean isLoaded(Identifier id) {
+		Boolean known = loaded.get(id);
+		if (known != null) return known;
+		boolean present = this.minecraft != null && this.minecraft.getResourceManager().getResource(id).isPresent();
+		loaded.put(id, present);
+		return present;
 	}
 
 	@Override
 	public void tick() {
 		super.tick();
 		if (seenVersion != GauchosGallery.dataVersion()) {
-			loadedPreviews.clear();
+			loaded.clear();
 			this.rebuildWidgets();
 		} else if (++tickCounter % 20 == 0) {
-			refreshPreviewState();
+			loaded.values().removeIf(present -> !present);
 		}
 	}
 
@@ -302,7 +442,7 @@ public class GalleryScreen extends Screen {
 	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
 		int delta = scrollY > 0 ? -1 : (scrollY < 0 ? 1 : 0);
 		if (delta == 0) return false;
-		if (mouseX < rightX - 6) leftScroll += delta;
+		if (mouseX < px + SIDEBAR) leftScroll += delta;
 		else rightScroll += delta;
 		this.rebuildWidgets();
 		return true;
@@ -314,54 +454,126 @@ public class GalleryScreen extends Screen {
 		if (this.minecraft != null) this.minecraft.setScreen(parent);
 	}
 
-	// ------------------------------------------------------------ Zeichnen
+	// =============================================================== Zeichnen
 
 	@Override
-	public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
-		// Der Hintergrund wird von Minecraft (1.21.6+) automatisch vorher gezeichnet.
-		// Rahmen + Vorschauen zuerst, damit die Buttons darueber liegen
-		for (Tile t : tiles) {
-			int x = t.x();
-			int y = t.y();
-			int w = TILE_W - 4;
-			int h = PREVIEW + 4;
-			g.fill(x, y, x + w, y + h, 0x66000000);
-			if (t.selected()) {
-				outline(g, x - 1, y - 1, w + 2, h + 2 + 22, GREEN);
-			}
-			int px = x + (w - PREVIEW) / 2;
-			int py = y + 2;
-			GalleryRepository.Option o = t.option();
-			if (o == null) {
-				g.drawCenteredString(this.font, "Vanilla", x + w / 2, y + h / 2 - 4, GRAY);
-			} else if (o.previewIndex >= 0 && loadedPreviews.contains(o.previewIndex)) {
-				g.blit(RenderPipelines.GUI_TEXTURED, previewId(o.previewIndex), px, py, 0f, 0f, PREVIEW, PREVIEW, PREVIEW, PREVIEW);
-			} else {
-				g.drawCenteredString(this.font, "…", x + w / 2, y + h / 2 - 4, GRAY);
-			}
-		}
-
-		super.render(g, mouseX, mouseY, delta);
-
-		g.drawCenteredString(this.font, this.title, this.width / 2, 8, GOLD);
-		String status = GauchosGallery.repository().status();
-		g.drawCenteredString(this.font, status, this.width / 2, 20, GauchosGallery.repository().isLoading() ? WHITE : GRAY);
-
-		for (Header h : headers) {
-			g.drawString(this.font, h.text(), LEFT_X + 2, h.y(), GOLD);
-		}
-		g.drawString(this.font, rightTitle, rightX, TOP + 2, WHITE);
-		if (rightHint != null) {
-			int hy = KILL_SOUND.equals(selected) ? this.height - BOTTOM_BAR - 14 : TOP + 14 + TILE_H + 4;
-			g.drawString(this.font, rightHint, rightX, hy, GRAY);
+	public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float delta) {
+		if (t == null) t = Theme.current();
+		GalleryRepository.Background bg = effectiveBackground();
+		Identifier id = bg == null ? null : backgroundId(bg.index);
+		if (id != null && isLoaded(id)) {
+			blitCover(g, id, 0, 0, this.width, this.height, bg.width, bg.height);
+			int dim = GauchosGallery.config().backgroundDim * 255 / 100;
+			if (dim > 0) g.fill(0, 0, this.width, this.height, Theme.alpha(t.dark() ? 0x000000 : 0xFFFFFF, dim));
+		} else {
+			super.renderBackground(g, mouseX, mouseY, delta);
+			g.fill(0, 0, this.width, this.height, t.overlay());
 		}
 	}
 
-	private static void outline(GuiGraphics g, int x, int y, int w, int h, int color) {
-		g.fill(x, y, x + w, y + 1, color);
-		g.fill(x, y + h - 1, x + w, y + h, color);
-		g.fill(x, y, x + 1, y + h, color);
-		g.fill(x + w - 1, y, x + w, y + h, color);
+	@Override
+	public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
+		// Fenster
+		g.fill(px, py, px + pw, py + ph, t.panel());
+		g.fill(px, py + HEADER, px + SIDEBAR, py + ph, t.sidebar());
+		g.fill(px, py + HEADER - 1, px + pw, py + HEADER, t.border());
+		g.fill(px + SIDEBAR - 1, py + HEADER, px + SIDEBAR, py + ph, t.border());
+		g.fill(px, py, px + pw, py + 2, t.accent()); // Akzent-Linie oben
+
+		// Titel
+		int tx = px + 12;
+		int ty = py + (HEADER - 8) / 2 + 1;
+		text(g, "Gauchos", tx, ty, t.accent());
+		text(g, " Texture Gallery", tx + this.font.width("Gauchos"), ty, t.text());
+
+		// Status (rechts neben dem Titel, falls Platz)
+		int titleEnd = tx + this.font.width("Gauchos Texture Gallery") + 16;
+		int statusEnd = firstHeaderButtonX() - 10;
+		if (statusEnd - titleEnd > 40) {
+			boolean loading = GauchosGallery.repository().isLoading();
+			String status = fit((loading ? "● " : "") + GauchosGallery.repository().status(), statusEnd - titleEnd);
+			text(g, status, statusEnd - this.font.width(status), ty, loading ? t.accent() : t.textMuted());
+		}
+
+		for (Label l : labels) text(g, l.text(), l.x(), l.y(), l.color());
+
+		super.render(g, mouseX, mouseY, delta);
+	}
+
+	private int firstHeaderButtonX() {
+		int x = px + pw - 8 - 18 * 3 - 8;
+		if (isDirty()) x -= this.font.width("Übernehmen") + 16 + 8;
+		return x;
+	}
+
+	// ---- kleine Zeichen-Helfer ----
+
+	private void sidebarItem(GuiGraphics g, UiButton b, boolean hov, String label, boolean sel, boolean chosen, int count) {
+		int x = b.getX(), y = b.getY(), w = b.getWidth(), h = b.getHeight();
+		if (sel) {
+			g.fill(x, y, x + w, y + h, Theme.alpha(t.accent(), 0x38));
+			g.fill(x, y + 2, x + 2, y + h - 2, t.accent());
+		} else if (hov) {
+			g.fill(x, y, x + w, y + h, t.surfaceHover());
+		}
+		int right = x + w - 6;
+		if (chosen) {
+			g.fill(right - 4, y + 6, right, y + 10, t.accent());
+			right -= 10;
+		} else if (count > 0) {
+			String c = String.valueOf(count);
+			text(g, c, right - this.font.width(c), y + 4, t.textMuted());
+			right -= this.font.width(c) + 6;
+		}
+		text(g, fit(label, right - (x + 8)), x + 8, y + 4, sel ? t.text() : (count == 0 ? t.textMuted() : t.text()));
+	}
+
+	private void iconButton(GuiGraphics g, UiButton b, boolean hov, String glyph, boolean sel) {
+		if (sel) box(g, b, Theme.alpha(t.accent(), 0x55));
+		else if (hov) box(g, b, t.surfaceHover());
+		int color = !b.active ? Theme.alpha(t.textMuted(), 0x80) : (sel || hov ? t.text() : t.textMuted());
+		centered(g, glyph, b.getX() + b.getWidth() / 2, b.getY() + (b.getHeight() - 8) / 2, color);
+	}
+
+	private void pill(GuiGraphics g, UiButton b, boolean hov, String txt, boolean sel) {
+		box(g, b, sel ? t.accent() : (hov ? t.surfaceHover() : t.surface()));
+		centered(g, txt, b.getX() + b.getWidth() / 2, b.getY() + (b.getHeight() - 8) / 2, sel ? t.onAccent() : t.text());
+	}
+
+	private static void box(GuiGraphics g, UiButton b, int color) {
+		g.fill(b.getX(), b.getY(), b.getX() + b.getWidth(), b.getY() + b.getHeight(), color);
+	}
+
+	private static void outline(GuiGraphics g, int x, int y, int w, int h, int thick, int color) {
+		g.fill(x, y, x + w, y + thick, color);
+		g.fill(x, y + h - thick, x + w, y + h, color);
+		g.fill(x, y + thick, x + thick, y + h - thick, color);
+		g.fill(x + w - thick, y + thick, x + w, y + h - thick, color);
+	}
+
+	/** Bild so skalieren, dass es die Flaeche ausfuellt (Raender werden abgeschnitten). */
+	private static void blitCover(GuiGraphics g, Identifier id, int x, int y, int w, int h, int texW, int texH) {
+		float scale = Math.max((float) w / texW, (float) h / texH);
+		int regionW = Math.max(1, Math.min(texW, Math.round(w / scale)));
+		int regionH = Math.max(1, Math.min(texH, Math.round(h / scale)));
+		float u = (texW - regionW) / 2f;
+		float v = (texH - regionH) / 2f;
+		g.blit(RenderPipelines.GUI_TEXTURED, id, x, y, u, v, w, h, regionW, regionH, texW, texH);
+	}
+
+	private void text(GuiGraphics g, String s, int x, int y, int color) {
+		g.drawString(this.font, s, x, y, color, false);
+	}
+
+	private void centered(GuiGraphics g, String s, int centerX, int y, int color) {
+		g.drawString(this.font, s, centerX - this.font.width(s) / 2, y, color, false);
+	}
+
+	/** Kuerzt Text mit "…", damit er in die Breite passt. */
+	private String fit(String s, int maxW) {
+		if (maxW <= 0) return "";
+		if (this.font.width(s) <= maxW) return s;
+		return this.font.plainSubstrByWidth(s, Math.max(0, maxW - this.font.width("…"))) + "…";
 	}
 
 	private static int clamp(int v, int min, int max) {

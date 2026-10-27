@@ -27,6 +27,13 @@ Ordner `gallery/killsounds/` – Dateien müssen **.ogg** sein (Ogg Vorbis, am b
 MP3/WAV kannst du z. B. mit Audacity oder einem Online-Converter in .ogg umwandeln.
 Kurz halten (unter 2 Sekunden klingt am besten).
 
+## Hintergrundbilder fürs Menü
+
+Ordner `gallery/backgrounds/` – ganz normale **.png**-Bilder (z. B. 1920×1080 oder 1280×720).
+Das Bild wird automatisch so skaliert, dass es den Bildschirm füllt.
+Lädst du mehrere hoch, kann sich jeder Spieler unter **⚙ → Hintergrund** eins aussuchen.
+Ohne Auswahl wird automatisch das erste (alphabetisch) benutzt.
+
 ## Alle Ordner
 
 ### PvP-Items

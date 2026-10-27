@@ -45,6 +45,13 @@ Siehe [`gallery/README.md`](gallery/README.md) – dort steht für jedes Item de
 Kurzfassung: PNG in z. B. `gallery/golden_apple/` hochladen, fertig.
 Zwei Beispiele (pinker Apfel, Ding-Sound) sind schon drin – kannst du löschen.
 
+## Das Menü
+
+- **Links** die Kategorien, **rechts** die Texturen als Bilder. Fährst du mit der Maus drüber, siehst du den Namen.
+- **↺** = Standard-Textur, **↻** = Galerie neu laden, **⚙** = Aussehen, **✕** = schließen (speichert automatisch).
+- **⚙ Aussehen** (jeder Spieler für sich): Dunkel/Hell, Akzentfarbe, Hintergrundbild, Abdunkeln.
+- Hintergrundbilder lädst du nach `gallery/backgrounds/` hoch.
+
 ## So funktioniert's (technisch)
 
 - Beim Start liest die Mod die Dateiliste deines Repos und lädt neue Dateien in

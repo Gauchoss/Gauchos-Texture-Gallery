@@ -51,6 +51,10 @@ public final class PackBuilder {
 		return "textures/preview/p" + index + ".png";
 	}
 
+	public static String backgroundPath(int index) {
+		return "textures/background/b" + index + ".png";
+	}
+
 	public static String soundEventPath(int index) {
 		return "kill.s" + index;
 	}
@@ -91,7 +95,15 @@ public final class PackBuilder {
 			}
 		}
 
-		// 3) Kill-Sounds
+		// 3) Hintergrundbilder (weich skaliert, damit grosse Bilder nicht pixelig aussehen)
+		Map<String, String> texts = new LinkedHashMap<>();
+		for (GalleryRepository.Background b : snap.backgrounds()) {
+			String p = "assets/" + NAMESPACE + "/" + backgroundPath(b.index);
+			plan.put(p, b.sha);
+			texts.put(p + ".mcmeta", "{\"texture\":{\"blur\":true}}");
+		}
+
+		// 4) Kill-Sounds
 		JsonObject soundsJson = new JsonObject();
 		for (GalleryRepository.KillSound s : snap.killSounds()) {
 			plan.put("assets/" + NAMESPACE + "/sounds/kill/s" + s.index + ".ogg", s.sha);
@@ -106,7 +118,7 @@ public final class PackBuilder {
 		String soundsText = soundsJson.toString();
 
 		// Fingerabdruck: hat sich seit dem letzten Mal etwas geaendert?
-		String fingerprint = sha1(plan + "|" + soundsText + "|" + PACK_MCMETA);
+		String fingerprint = sha1(plan + "|" + texts + "|" + soundsText + "|" + PACK_MCMETA);
 		Path dir = packDir();
 		Path stateFile = dir.resolve(".gauchos_state");
 		if (Files.exists(stateFile) && Files.readString(stateFile, StandardCharsets.UTF_8).equals(fingerprint)) {
@@ -121,6 +133,11 @@ public final class PackBuilder {
 			Path target = dir.resolve(e.getKey());
 			Files.createDirectories(target.getParent());
 			Files.copy(repo.cacheFile(e.getValue()), target, StandardCopyOption.REPLACE_EXISTING);
+		}
+		for (Map.Entry<String, String> e : texts.entrySet()) {
+			Path target = dir.resolve(e.getKey());
+			Files.createDirectories(target.getParent());
+			Files.writeString(target, e.getValue(), StandardCharsets.UTF_8);
 		}
 		if (!snap.killSounds().isEmpty()) {
 			Path sj = dir.resolve("assets/" + NAMESPACE + "/sounds.json");
